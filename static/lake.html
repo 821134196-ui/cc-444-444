@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>湖面计时 · 湖影公园</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main style="max-width:1100px">
+  <h1>湖面计时</h1>
+  <div id="suspend" style="display:none" class="suspend-banner"></div>
+  <div class="muted" id="summary" style="margin-bottom:18px;font-size:16px"></div>
+  <div class="lake-grid" id="grid"></div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+$("#nav").innerHTML = nav("/lake");
+startClock();
+
+async function render() {
+  const d = await api("/api/lake");
+  const sus = d.suspended;
+  $("#suspend").style.display = sus ? "block" : "none";
+  $("#suspend").textContent = sus
+    ? `⛔ ${d.weather.message}：所有在湖船只请立即回港` : "";
+  const overdueN = d.trips.filter(t => t.overdue).length;
+  $("#summary").innerHTML = d.trips.length
+    ? `在湖船只 <b>${d.trips.length}</b> 艘${overdueN ? ` · <span style="color:var(--vest);font-weight:700">超时 ${overdueN} 艘</span>` : ""}　更新于 ${esc(d.now)}`
+    : `湖面暂无船只　更新于 ${esc(d.now)}`;
+  $("#grid").innerHTML = d.trips.map(t => `
+    <div class="lake-card ${t.overdue ? "overdue" : ""}">
+      <div class="lc-boat">${esc(t.boat_name)}</div>
+      <div class="lc-type">${t.type_name} · ${t.headcount} 人</div>
+      <div class="lc-count ${t.overdue ? "over" : ""}">
+        ${t.overdue ? `+${t.overdue_min}` : t.remaining_min}
+      </div>
+      <div class="lc-label">${t.overdue ? "超时分钟，请立即回港" : "距离应回港（分钟）"}</div>
+      <div class="lc-due">
+        出航 ${esc(t.departed_at.slice(11))} ｜ 应回港 ${esc(t.due_back.slice(11))}
+        ${t.reminded_at ? "<br>📢 已发回港提醒" : ""}
+      </div>
+      <div style="margin-top:16px">
+        <button class="btn btn-vest btn-sm" onclick="recall(${t.id})">📢 呼叫回港</button>
+        <a class="btn btn-lake btn-sm" href="/dock">回港检查</a>
+      </div>
+    </div>`).join("")
+    || `<div class="card" style="grid-column:1/-1;text-align:center;padding:50px;color:var(--ink-2)">🌊 湖面平静，暂无出航船只</div>`;
+}
+window.recall = async id => {
+  try { await api(`/api/trips/${id}/recall`, { method: "POST", body: {} });
+    toast("已记录呼叫回港", "ok");
+  } catch (e) { toast(e.message, "err"); }
+};
+render();
+liveRefresh(render);
+</script>
+</body>
+</html>

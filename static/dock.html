@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>回港检查 · 湖影公园</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1>回港检查</h1>
+  <div class="card">
+    <h2 style="margin-top:0">🛬 待检查 / 检查中船只</h2>
+    <table class="wide">
+      <thead><tr>
+        <th>船只</th><th>人数</th><th>出航时间</th><th>应回港</th><th>实际回港</th>
+        <th>状态</th><th>操作</th>
+      </tr></thead>
+      <tbody id="trips"></tbody>
+    </table>
+  </div>
+
+  <div id="detail" style="display:none">
+    <div class="card">
+      <h2 style="margin-top:0" id="d-title"></h2>
+      <div class="grid grid-2">
+        <label class="field">船体状况
+          <select id="hull">
+            <option value="ok">完好</option>
+            <option value="bad">有刮碰（每单扣 ¥50.00）</option>
+          </select></label>
+        <label class="field">救生衣缺失件数（每件 ¥80.00，同船均摊）
+          <input id="vest-missing" type="number" value="0" min="0"></label>
+      </div>
+      <label class="field" style="margin-top:12px">检查备注
+        <input id="note" placeholder="如：右舷轻微划痕，已拍照存证"></label>
+      <div style="margin-top:14px">
+        <button class="btn btn-lake btn-lg" onclick="doCheck()">完成回港检查</button>
+        <span class="muted">检查完成并确认救生衣归还后，订单才进入押金复核。</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">📷 船体照片（本地目录保存）</h2>
+      <input type="file" id="photo" accept="image/*" capture="environment">
+      <button class="btn btn-vest" onclick="uploadPhoto()">上传照片</button>
+      <div id="photos" class="row-actions" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">🦺 救生衣归还</h2>
+      <div id="tickets"></div>
+      <button class="btn btn-vest btn-lg" style="margin-top:12px" onclick="vestReturn()">
+        确认救生衣全部归还，释放船只
+      </button>
+    </div>
+  </div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+$("#nav").innerHTML = nav("/dock");
+startClock();
+let tripId = Number(new URLSearchParams(location.search).get("trip")) || 0;
+let view = null;
+
+async function render() {
+  const d = await api("/api/dock");
+  $("#trips").innerHTML = d.trips.map(t => `
+    <tr>
+      <td><b>${esc(t.boat_name)}</b></td>
+      <td class="num">${t.headcount}</td>
+      <td class="num">${esc(t.departed_at.slice(5))}</td>
+      <td class="num">${esc(t.due_back.slice(5))}</td>
+      <td class="num">${t.returned_at ? esc(t.returned_at.slice(5)) : "—"}</td>
+      <td>${badge(t.status)}</td>
+      <td><a class="btn btn-sm ${t.status === "RETURNED" ? "btn-ghost" : "btn-lake"}"
+        href="/dock?trip=${t.id}">${t.status === "RETURNED" ? "查看" : "检查"}</a></td>
+    </tr>`).join("") || `<tr><td colspan="7" class="muted">暂无待检查船只</td></tr>`;
+
+  if (!tripId) { $("#detail").style.display = "none"; return; }
+  try { view = await api(`/api/trips/${tripId}`); }
+  catch { $("#detail").style.display = "none"; return; }
+  $("#detail").style.display = "block";
+  $("#d-title").textContent = `${view.boat_name} · 航次 #${view.id}`;
+  if (view.inspect_note) $("#note").value = view.inspect_note;
+  $("#photos").innerHTML = view.photos.map(p =>
+    `<div><img class="photo-thumb" src="/${p.path}" alt=""><div class="muted" style="font-size:12px">${esc(p.label)}</div></div>`
+  ).join("") || `<span class="muted">暂无照片</span>`;
+  $("#tickets").innerHTML = view.tickets.map(t => `
+    <div class="person-row">
+      <span class="pname"><b>${esc(t.ticket_no)}</b> · ${esc(t.name)} · ${t.party_size} 人</span>
+      <span style="margin-left:auto">
+        ${t.settled_deducted != null ? badge("SETTLED") : view.vest_ok != null ? badge("VEST_RETURNED") : badge("RETURNED")}
+      </span>
+    </div>`).join("");
+}
+
+window.doCheck = async () => {
+  try {
+    await api(`/api/trips/${tripId}/return-check`, { method: "POST", body: {
+      hull_ok: $("#hull").value === "ok",
+      vest_missing: Number($("#vest-missing").value || 0),
+      note: $("#note").value,
+    }});
+    toast("回港检查已记录，可继续确认救生衣归还", "ok");
+    render();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.vestReturn = async () => {
+  try {
+    await api(`/api/trips/${tripId}/vest-return`, { method: "POST", body: {} });
+    toast("救生衣已全部归还，船只释放；请前往押金复核", "ok");
+    setTimeout(() => location.href = "/deposit", 900);
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.uploadPhoto = async () => {
+  const f = $("#photo").files[0];
+  if (!f) return toast("请先选择照片", "err");
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      await api(`/api/trips/${tripId}/photo`, { method: "POST", body: {
+        filename: f.name, label: "刮碰存证",
+        data: reader.result.split(",")[1],
+      }});
+      toast("照片已保存到本地 photos 目录", "ok");
+      render();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  reader.readAsDataURL(f);
+};
+
+render();
+liveRefresh(render);
+</script>
+</body>
+</html>

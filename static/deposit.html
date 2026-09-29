@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>押金复核 · 湖影公园</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1>押金复核</h1>
+  <div class="card">
+    <h2 style="margin-top:0">💴 待复核订单（扣款金额由回港检查自动带出）</h2>
+    <table class="wide">
+      <thead><tr>
+        <th>候船号</th><th>联系人</th><th>人数</th><th>押金</th>
+        <th>回港检查</th><th>建议扣款</th><th>状态</th><th>操作</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="muted" style="margin-top:10px">
+      结算与回港检查单关联；重复点击只按首次结果执行，模拟支付渠道按幂等键 <code>ded:票ID</code> 防重复扣款。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">🧾 模拟支付流水</h2>
+    <table class="wide">
+      <thead><tr><th>时间</th><th>候船号</th><th>类型</th><th>金额</th><th>状态</th><th>渠道流水</th><th>幂等键</th></tr></thead>
+      <tbody id="pays"></tbody>
+    </table>
+  </div>
+</main>
+<script src="/static/common.js"></script>
+<script>
+$("#nav").innerHTML = nav("/deposit");
+startClock();
+
+const KIND_CN = { DEPOSIT: "押金收取", FEE: "船费", DEDUCT: "押金扣除", REFUND: "押金退还" };
+
+async function render() {
+  const d = await api("/api/deposits");
+  $("#rows").innerHTML = d.items.map(t => {
+    const settled = t.already_deducted != null;
+    const deduct = t.suggested_deduct;
+    const check = t.hull_ok == null ? "—"
+      : `${t.hull_ok ? "船体完好" : "船体刮碰"} · ${t.vest_ok ? "救生衣齐" : "有缺失"}`;
+    return `<tr class="${settled ? "row-muted" : ""}">
+      <td><b class="num">${esc(t.ticket_no)}</b></td>
+      <td>${esc(t.name)}</td>
+      <td class="num">${t.party_size}</td>
+      <td class="num">${yuan(t.deposit)}</td>
+      <td>${check}</td>
+      <td class="num" style="color:${deduct ? "var(--vest-dark)" : "var(--ok)"};font-weight:700">
+        ${deduct ? `-${yuan(deduct)}` : "无扣款"}</td>
+      <td>${badge(t.status)}</td>
+      <td class="row-actions">
+        <button class="btn btn-sm ${settled ? "btn-ghost" : "btn-vest"}"
+          onclick="settle(${t.id})">${settled ? "再次提交（幂等回放）" : "确认结算"}</button>
+      </td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted">暂无待复核订单</td></tr>`;
+
+  const pays = await api("/api/payments");
+  $("#pays").innerHTML = pays.items.map(p => `
+    <tr>
+      <td class="num">${esc(p.created_at.slice(5))}</td>
+      <td class="num">${esc(p.ticket_no)}</td>
+      <td>${KIND_CN[p.kind] || p.kind}</td>
+      <td class="num">${yuan(p.amount)}</td>
+      <td>${p.status === "SUCCESS" ? `<span class="badge ok">成功</span>` : `<span class="badge danger">失败</span>`}</td>
+      <td class="num muted">${esc(p.reference)}</td>
+      <td class="num muted">${esc(p.idempotency_key || "")}</td>
+    </tr>`).join("") || `<tr><td colspan="7" class="muted">暂无支付记录</td></tr>`;
+}
+
+window.settle = async id => {
+  try {
+    const r = await api(`/api/tickets/${id}/settle`, { method: "POST", body: {} });
+    const s = r.settlement;
+    toast(r.idempotent
+      ? `幂等回放：仍为扣款 ${yuan(s.deducted)} / 退还 ${yuan(s.refunded)}，未重复扣款`
+      : `结算完成：扣款 ${yuan(s.deducted)}，退还 ${yuan(s.refunded)}`,
+      "ok");
+    render();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+render();
+liveRefresh(render);
+</script>
+</body>
+</html>

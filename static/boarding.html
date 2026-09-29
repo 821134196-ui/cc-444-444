@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登船核验 · 湖影公园</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1>登船核验</h1>
+
+  <div class="card">
+    <div class="toolbar">
+      <label class="field" style="min-width:280px">选择批次
+        <select id="batch-sel"></select></label>
+      <span id="batch-meta" class="stat"></span>
+      <span style="margin-left:auto" class="row-actions">
+        <button class="btn btn-ghost btn-sm" onclick="render()">刷新</button>
+      </span>
+    </div>
+    <div id="suspend" style="display:none" class="suspend-banner"></div>
+  </div>
+
+  <div id="detail" style="display:none">
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">🦺 逐人救生衣尺码确认</h2>
+        <span class="stat">已核验 <b id="chk-n">0</b> / <b id="chk-total">0</b></span>
+        <span class="progress" style="width:200px"><i id="chk-bar"></i></span>
+      </div>
+      <div id="people"></div>
+      <div class="muted" style="margin-top:10px">库存：<span id="stock"></span>　儿童请选择 S（儿童）码；库存不足时无法确认。</div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">🚧 闸口扫描（两处闸口 G1 / G2 同一号码只放行一次）</h2>
+      <div class="gate-box">
+        <input id="gate-input" placeholder="扫描/输入候船号，如 A-001" style="flex:1;min-width:260px">
+        <button class="btn btn-lake btn-lg gate-btn" onclick="scan('G1')">G1 放行</button>
+        <button class="btn btn-vest btn-lg gate-btn" onclick="scan('G2')">G2 放行</button>
+      </div>
+      <div id="gate-result" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">🚤 出航</h2>
+      <div class="toolbar">
+        <label class="field">航次时长（分钟，演示可调）
+          <input id="trip-min" type="number" value="60" min="1" style="width:160px"></label>
+        <button class="btn btn-vest btn-lg" id="depart-btn" onclick="depart()">全部核验并出航</button>
+        <span class="muted">所有人员确认救生衣、所有候船号通过闸口后才能出航；停航期间禁止出航。</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+$("#nav").innerHTML = nav("/boarding");
+startClock();
+let batchId = Number(new URLSearchParams(location.search).get("batch")) || 0;
+let view = null;
+
+async function loadBatches() {
+  const d = await api("/api/departures");
+  const sel = $("#batch-sel");
+  const opts = d.batches;
+  if (!batchId && opts.length) batchId = opts[0].id;
+  sel.innerHTML = opts.map(b =>
+    `<option value="${b.id}" ${b.id === batchId ? "selected" : ""}>`
+    + `批次 #${b.id} · ${b.boat_name} · ${b.headcount}人</option>`).join("")
+    || `<option value="">暂无待登船批次</option>`;
+  sel.onchange = () => { batchId = Number(sel.value) || 0; render(); };
+  $("#suspend").style.display = d.suspended ? "block" : "none";
+  $("#suspend").textContent = "⛔ 天气停航中：暂停登船出航，等待广播恢复";
+  $("#depart-btn").disabled = d.suspended;
+}
+
+$("#batch-sel")?.addEventListener?.("change", () => {});
+
+async function render() {
+  await loadBatches();
+  if (!batchId) { $("#detail").style.display = "none"; return; }
+  try {
+    view = await api(`/api/batches/${batchId}`);
+  } catch { $("#detail").style.display = "none"; return; }
+  $("#detail").style.display = "block";
+  $("#batch-meta").innerHTML =
+    `${esc(view.boat_name)} · ${view.type_name} · ${view.headcount}/${view.capacity} 人 · ${badge(view.status === "CREATED" ? "CREATED" : "BOARDING_B")}`;
+  // 按 ticket 分组
+  const groups = {};
+  view.people.forEach(p => { (groups[p.ticket_id] ||= []).push(p); });
+  $("#people").innerHTML = Object.entries(groups).map(([tid, ps]) => `
+    <div style="border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin-bottom:10px">
+      <div class="toolbar" style="margin:6px 0">
+        <b class="num" style="font-size:18px">${esc(ps[0].ticket_no)}</b>
+        <span class="muted">${esc(ps[0].visitor_name)} · ${ps.length} 人</span>
+        <span style="margin-left:auto">${ps.every(p => p.checked) ? badge("BOARDING") : badge("WAITING")}</span>
+      </div>
+      ${ps.map(p => `
+        <div class="person-row">
+          <span class="pname">第 ${p.person_idx + 1} 位 ${p.ticket_no && p.person_idx === 0 && ""}</span>
+          <span class="muted">${p.gate ? `闸口 ${p.gate} 已放行 · 扫描 ${p.scan_count} 次` : "未放行"}</span>
+          <span class="size-btns">
+            ${["S", "M", "L", "XL"].map(s => `
+              <button class="btn size-btn ${p.vest_size === s ? "done" : ""}"
+                onclick="setVest(${p.id}, '${s}')">${s === "S" ? "S 儿童" : s}${p.vest_size === s ? " ✓" : ""}</button>`).join("")}
+          </span>
+        </div>`).join("")}
+    </div>`).join("");
+  const done = view.checked_count;
+  $("#chk-n").textContent = done;
+  $("#chk-total").textContent = view.people.length;
+  $("#chk-bar").style.width = `${view.people.length ? done / view.people.length * 100 : 0}%`;
+  const labels = { S: "S（儿童）", M: "M", L: "L", XL: "XL" };
+  $("#stock").innerHTML = ["S", "M", "L", "XL"].map(s => `${labels[s]} ${view.stock[s] ?? 0} 件`).join(" · ");
+}
+
+window.setVest = async (id, size) => {
+  try { await api(`/api/boardings/${id}/vest`, { method: "POST", body: { size } });
+    render();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.scan = async gate => {
+  const no = $("#gate-input").value.trim();
+  if (!no) return toast("请先输入候船号", "err");
+  try {
+    const r = await api("/api/gate/scan", { method: "POST", body: { ticket_no: no, gate } });
+    $("#gate-result").innerHTML =
+      `<div class="badge ok" style="font-size:16px;padding:8px 16px">✅ ${esc(r.message)}</div>`;
+    toast(r.message, "ok");
+    $("#gate-input").value = "";
+    render();
+  } catch (e) {
+    $("#gate-result").innerHTML =
+      `<div class="badge danger" style="font-size:16px;padding:8px 16px">⛔ ${esc(e.message)}</div>`;
+    toast(e.message, "err");
+  }
+};
+$("#gate-input")?.addEventListener("keydown", e => { if (e.key === "Enter") scan("G1"); });
+
+window.depart = async () => {
+  try {
+    await api(`/api/batches/${batchId}/depart`, {
+      method: "POST", body: { minutes: Number($("#trip-min").value) } });
+    toast("已出航，开始湖面计时", "ok");
+    setTimeout(() => location.href = "/lake", 800);
+  } catch (e) { toast(e.message, "err"); }
+};
+
+render();
+liveRefresh(render);
+</script>
+</body>
+</html>

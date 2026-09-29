@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>候船叫号屏 · 湖影公园</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="screen-body">
+<div class="topbar">
+  <div class="brand">🚣 湖影公园游船 · 候船叫号屏</div>
+  <nav>
+    <a href="/workbench">工作人员入口</a>
+  </nav>
+  <div class="clock" id="clock"></div>
+</div>
+<div class="screen-wrap">
+  <div class="weather-strip" id="weather"></div>
+  <div id="suspend" style="display:none" class="suspend-banner"></div>
+
+  <div class="calling-hero" id="hero"></div>
+
+  <div class="screen-columns">
+    <div class="screen-panel">
+      <h2>⏳ 候船队列</h2>
+      <div id="queue"></div>
+    </div>
+    <div class="screen-panel">
+      <h2>📢 叫号须知</h2>
+      <div style="font-size:17px;line-height:2;opacity:.95">
+        <div>1. 听到号码请前往 <b style="color:#ffd9b8">登船码头</b> 核验救生衣</div>
+        <div>2. 叫号后 3 分钟未到视为<b style="color:#ffb3b3">过号</b>，需重新排队</div>
+        <div>3. 儿童请配合试穿 S 码救生衣</div>
+        <div>4. 停航广播期间暂停一切出航</div>
+      </div>
+      <h2 style="margin-top:20px">🕒 当前时间</h2>
+      <div id="bigclock" style="font-size:34px;font-weight:700;font-variant-numeric:tabular-nums"></div>
+    </div>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+function renderWeather(d) {
+  const w = d.weather;
+  const level = { NORMAL: "✅ 适航", WARNING: "⚠️ 注意", SUSPEND: "⛔ 停航" }[w.level];
+  $("#weather").innerHTML =
+    `<span class="w-level">天气：${esc(w.condition)} ${level}</span>
+     <span>风速 ${w.wind} km/h</span><span style="opacity:.85">${esc(w.message)}</span>`;
+  const sus = $("#suspend");
+  if (w.level === "SUSPEND") {
+    sus.style.display = "block";
+    sus.textContent = `⛔ ${w.message}：所有批次暂停出航，已组批游客请回候船区等待广播`;
+  } else sus.style.display = "none";
+}
+
+async function render() {
+  const d = await api("/api/queue");
+  renderWeather(d);
+  // 正在叫号 / 已就绪 的头号
+  const calling = d.calling;
+  if (calling) {
+    $("#hero").innerHTML = `
+      <div class="big-no">${esc(calling.ticket_no)}</div>
+      <div class="big-meta">
+        <div>船型：<b>${TYPE_CN[calling.boat_pref]}</b></div>
+        <div>人数：<b>${calling.party_size} 人</b>${calling.has_child ? " · 含儿童" : ""}</div>
+        <div>${calling.status === "READY"
+          ? "已分配批次，请前往登船核验"
+          : "请听到广播后前往登船码头"}</div>
+      </div>`;
+  } else {
+    $("#hero").innerHTML = `<div class="hero-idle">🌊 暂无叫号，请排队等候</div>`;
+  }
+  $("#queue").innerHTML = d.queue.length ? d.queue.map(t => `
+    <div class="q-row ${t.status === "MISSED" ? "missed" : ""} ${t.status === "CALLED" ? "called" : ""}">
+      <span class="q-no">${esc(t.ticket_no)}</span>
+      <span>${TYPE_CN[t.boat_pref]} · ${t.party_size} 人</span>
+      <span>${badge(t.status)}</span>
+      <span class="q-eta">${t.status === "WAITING" ? `预计等待 ${t.eta_minutes} 分钟` : ""}</span>
+    </div>`).join("") : `<div style="opacity:.8;padding:14px">队列已空</div>`;
+  $("#bigclock").textContent = d.now.replace("T", " ");
+}
+startClock();
+render();
+liveRefresh(render);
+</script>
+</body>
+</html>

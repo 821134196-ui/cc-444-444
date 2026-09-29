@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>组批工作台 · 湖影公园</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1>组批工作台</h1>
+  <div id="suspend" style="display:none" class="suspend-banner"></div>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h2 style="margin-top:0">🎟️ 售票（游客资料 / 支付记录为演示数据）</h2>
+      <form id="sell-form" class="grid grid-2" style="gap:12px">
+        <label class="field">联系人
+          <input name="name" value="演示游客" required></label>
+        <label class="field">手机号
+          <input name="phone" value="138****0000" required></label>
+        <label class="field">人数
+          <input name="party_size" type="number" value="2" min="1" max="12"></label>
+        <label class="field">儿童人数
+          <input name="children_count" type="number" value="0" min="0"></label>
+        <label class="field">预约船型
+          <select name="boat_pref">
+            <option value="PEDAL">脚踏船（上限 4 人）</option>
+            <option value="ELECTRIC">电动船（上限 8 人）</option>
+            <option value="PADDLE">手划船（上限 2 人）</option>
+          </select></label>
+        <div style="display:flex;align-items:flex-end">
+          <button class="btn btn-lake btn-block" type="submit">售票并入队</button>
+        </div>
+      </form>
+      <div class="muted" style="margin-top:8px">押金由模拟支付适配器即时扣款：200 元/人。</div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">🌦️ 天气与停航控制（模拟适配器）</h2>
+      <div id="weather-now" class="toolbar"></div>
+      <div class="row-actions">
+        <button class="btn btn-lake" onclick="setW('NORMAL')">正常运营</button>
+        <button class="btn btn-ghost" onclick="setW('WARNING')">大风预警</button>
+        <button class="btn btn-vest" onclick="setW('SUSPEND')">天气停航</button>
+      </div>
+      <div class="muted" style="margin-top:10px">停航瞬间：不能创建批次/出航，已组批未出航批次自动解散并退回候船队列，湖面船只催促回港。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="toolbar">
+      <h2 style="margin:0">📣 叫号</h2>
+      <button class="btn btn-vest" onclick="callNext(null)">叫下一号</button>
+      <select id="call-type">
+        <option value="">全部船型</option>
+        <option value="PEDAL">脚踏船</option>
+        <option value="ELECTRIC">电动船</option>
+        <option value="PADDLE">手划船</option>
+      </select>
+      <span class="stat" id="qstat"></span>
+    </div>
+    <table class="wide">
+      <thead><tr>
+        <th>选</th><th>候船号</th><th>联系人</th><th>船型</th><th>人数</th>
+        <th>儿童</th><th>状态</th><th>操作</th>
+      </tr></thead>
+      <tbody id="pool"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">⛵ 船只与组批</h2>
+    <div class="toolbar">
+      <span class="stat">选中合计 <b id="sel-n">0</b> 人，分配给</span>
+      <select id="boat-sel"></select>
+      <button class="btn btn-vest btn-lg" id="create-btn">组批并锁定船只</button>
+    </div>
+    <table class="wide">
+      <thead><tr><th>船只</th><th>船型</th><th>载客上限</th><th>状态</th><th>当前批次</th></tr></thead>
+      <tbody id="boats"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">📋 进行中的批次（未出航）</h2>
+    <div id="batches"></div>
+  </div>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+let view = null;
+const picked = new Set();
+
+$("#nav").innerHTML = nav("/workbench");
+startClock();
+
+$("#sell-form").onsubmit = async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    const t = await api("/api/tickets", { method: "POST", body: Object.fromEntries(f) });
+    toast(`售票成功：${t.ticket_no}，模拟押金 ${yuan(t.deposit)} 扣款成功`, "ok");
+    render();
+  } catch (err) { toast(err.message, "err"); }
+};
+
+async function setW(level) {
+  try {
+    const r = await api("/api/weather", { method: "POST", body: { level } });
+    toast(level === "SUSPEND"
+      ? `已发布停航广播，解散 ${r.suspended_batches.length} 个批次`
+      : "天气状态已更新", level === "SUSPEND" ? "err" : "ok");
+    render();
+  } catch (err) { toast(err.message, "err"); }
+}
+
+async function callNext(forceType) {
+  const type = forceType || $("#call-type").value || null;
+  try {
+    const t = await api("/api/call", { method: "POST", body: { boat_type: type } });
+    if (!t) return toast("队列中没有可叫号码", "info");
+    toast(`已叫号 ${t.ticket_no}`, "ok");
+    render();
+  } catch (err) { toast(err.message, "err"); }
+}
+
+window.markMissed = async id => {
+  try { await api("/api/missed", { method: "POST", body: { ticket_id: id } });
+    toast("已标记过号，可重排到队尾", "info"); render();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.requeue = async id => {
+  try { await api("/api/requeue", { method: "POST", body: { ticket_id: id } });
+    toast("过号已恢复并重排到队尾", "ok"); render();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+function updateSel() {
+  let n = 0;
+  $$("input[name=pick]").forEach(cb => {
+    const t = view.pool.find(x => x.id === Number(cb.value));
+    if (cb.checked) n += t.party_size;
+  });
+  $("#sel-n").textContent = n;
+}
+
+$("#create-btn").onclick = async () => {
+  const ids = $$("input[name=pick]:checked").map(cb => Number(cb.value));
+  const boat_id = Number($("#boat-sel").value);
+  if (!ids.length) return toast("请先勾选候船号", "err");
+  try {
+    const b = await api("/api/batches", { method: "POST",
+      body: { boat_id, ticket_ids: ids } });
+    toast(`批次 #${b.id} 已创建，船只锁定`, "ok");
+    picked.clear();
+    render();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+function renderWeather(d) {
+  const w = d.weather;
+  $("#weather-now").innerHTML =
+    `<span class="badge ${w.level === "SUSPEND" ? "danger" : w.level === "WARNING" ? "warn" : "ok"}">`
+    + `${esc(w.condition)} · 风速 ${w.wind}km/h</span><span class="muted">${esc(w.message)}</span>`;
+  const sus = $("#suspend");
+  sus.style.display = w.level === "SUSPEND" ? "block" : "none";
+  sus.textContent = w.level === "SUSPEND" ? `⛔ ${w.message}` : "";
+  $("#create-btn").disabled = w.level === "SUSPEND";
+}
+
+async function render() {
+  view = await api("/api/workbench");
+  renderWeather(view.suspended
+    ? { weather: { level: "SUSPEND", condition: "停航", wind: "-", message: "天气停航中" } }
+    : await api("/api/weather"));
+
+  $("#qstat").innerHTML = `候船 <b>${view.pool.filter(t => ["WAITING","MISSED"].includes(t.status)).length}</b> 单`;
+
+  $("#pool").innerHTML = view.pool.map(t => `
+    <tr class="${t.status === "MISSED" ? "row-muted" : ""}">
+      <td><input type="checkbox" class="pill-check" name="pick" value="${t.id}"
+        ${picked.has(t.id) ? "checked" : ""}
+        ${t.status === "READY" ? "disabled" : ""} onchange="onPick(${t.id}, this.checked)"></td>
+      <td><b class="num">${esc(t.ticket_no)}</b></td>
+      <td>${esc(t.name)}</td>
+      <td>${TYPE_CN[t.boat_pref]}</td>
+      <td class="num">${t.party_size}</td>
+      <td>${t.children_count || (t.has_child ? "有" : "—")}</td>
+      <td>${badge(t.status)}</td>
+      <td class="row-actions">
+        ${t.status === "CALLED" ? `<button class="btn btn-sm btn-danger" onclick="markMissed(${t.id})">记过号</button>` : ""}
+        ${t.status === "MISSED" ? `<button class="btn btn-sm btn-vest" onclick="requeue(${t.id})">过号重排</button>` : ""}
+      </td>
+    </tr>`).join("") || `<tr><td colspan="8" class="muted">暂无候船号码</td></tr>`;
+  $$("input[name=pick]").forEach(cb => {
+    if (cb.checked) picked.add(Number(cb.value));
+    cb.onchange = () => { cb.checked ? picked.add(Number(cb.value)) : picked.delete(Number(cb.value)); updateSel(); };
+  });
+  updateSel();
+
+  $("#boat-sel").innerHTML = view.boats
+    .filter(b => b.status === "DOCKED").map(b =>
+      `<option value="${b.id}">${b.name} · ${b.type_name}（上限 ${b.capacity} 人）</option>`).join("");
+  $("#boats").innerHTML = view.boats.map(b => `
+    <tr>
+      <td><b>${esc(b.name)}</b></td><td>${b.type_name}</td>
+      <td class="num">${b.capacity}</td><td>${badge(b.status)}</td>
+      <td class="muted">${b.status === "LOCKED" ? "待登船" : b.status === "OUT" ? "湖面中" : "—"}</td>
+    </tr>`).join("");
+
+  $("#batches").innerHTML = view.active_batches.length ? view.active_batches.map(b => `
+    <div style="border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px">
+      <div class="toolbar">
+        <b>批次 #${b.id}</b>
+        <span class="badge vest">${esc(b.boat_name)}</span>
+        ${badge(b.status === "CREATED" ? "CREATED" : "BOARDING_B")}
+        <span class="stat">${b.headcount} 人</span>
+        <span>${b.tickets.map(t => esc(t.ticket_no)).join("、") || ""}</span>
+        <span style="margin-left:auto" class="row-actions">
+          <a class="btn btn-sm btn-lake" href="/boarding?batch=${b.id}">前往登船核验</a>
+          <button class="btn btn-sm btn-ghost" onclick="changeBoat(${b.id})">临时换船</button>
+          <button class="btn btn-sm btn-danger" onclick="disband(${b.id})">解散批次</button>
+        </span>
+      </div>
+      <div class="muted">${esc(b.note || "")}</div>
+    </div>`).join("") : `<div class="muted">暂无进行中批次</div>`;
+}
+
+window.onPick = (id, on) => { on ? picked.add(id) : picked.delete(id); updateSel(); };
+
+window.changeBoat = async bid => {
+  const opts = view.boats.filter(b => b.status === "DOCKED").map(b => `${b.id}:${b.name}(${b.capacity}人)`);
+  if (!opts.length) return toast("没有其他可用船只", "err");
+  const v = prompt("输入新船只编号：\n" + opts.join("\n"));
+  if (!v) return;
+  try {
+    await api(`/api/batches/${bid}/change-boat`, { method: "POST", body: { new_boat_id: Number(v) } });
+    toast("换船成功（人数上限已校验）", "ok"); render();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.disband = async bid => {
+  if (!confirm("解散后游客退回候船队列，确认？")) return;
+  try {
+    await api(`/api/batches/${bid}/disband`, { method: "POST", body: { reason: "人工解散" } });
+    toast("批次已解散，号码退回队列", "info"); render();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+render();
+liveRefresh(render);
+</script>
+</body>
+</html>
